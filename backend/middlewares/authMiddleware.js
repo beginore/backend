@@ -1,0 +1,19 @@
+import jwt from 'jsonwebtoken';
+import ErrorHandler from "../middlewares/error.js";
+
+// Проверка авторизации через JWT
+export const authMiddleware = async (req, res, next) => {
+  const token = req.headers['authorization']?.split(' ')[1];
+
+  if (!token) {
+    return next(new ErrorHandler("Authentication failed!", 401));
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.userId = decoded.userId; // Сохраняем userId в запросе
+    next();
+  } catch (error) {
+    return next(new ErrorHandler("Authentication failed!", 401));
+  }
+};
