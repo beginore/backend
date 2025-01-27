@@ -1,127 +1,223 @@
 import bcrypt from "bcryptjs";
-import ErrorHandler from "../middlewares/error.js";
+import jwt from "jsonwebtoken";
 import { User } from "../models/user.js";
-import jwt from 'jsonwebtoken'; 
+import generateOtp from "../middlewares/generateOtp.js";
+import sendEmail from "../middlewares/sendEmail.js";
+import ErrorHandler from "../middlewares/error.js";
 
-// Регистрация пользователя
+const signToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_SECRET, {
+    expiresIn: process.env.JWT_EXPIRES_IN,
+  });
+};
+
+const createSendToken = (user, statusCode, res, message) => {
+  const token = signToken(user._id);
+
+  const cookieOptions = {
+    expires: new Date(
+      Date.now() + process.env.JWT_COOKIE_EXPIRES_IN * 24 * 60 * 60 * 1000
+    ),
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "Lax",
+  };
+
+  res.cookie("token", token, cookieOptions);
+
+  user.password = undefined;
+  user.otp = undefined;
+
+  res.status(statusCode).json({
+    success: true,
+    message,
+    token,
+    data: { user },
+  });
+};
+
+// Регистрация
 export const registerUser = async (req, res, next) => {
   const { name, email, password } = req.body;
 
   if (!name || !email || !password) {
-    return next(new ErrorHandler("Please Fill All Fields!", 400));
+    return next(new ErrorHandler("Please fill all fields!", 400));
   }
 
+  const existingUser = await User.findOne({ email });
+  if (existingUser) {
+    return next(new ErrorHandler("Email already exists!", 400));
+  }
+
+  const otp = generateOtp();
+  const otpExpires = Date.now() + 10 * 60 * 1000; 
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+
+  const newUser = await User.create({
+    name,
+    email,
+    password: hashedPassword,
+    otp,
+    otpExpires,
+  });
+
   try {
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return next(new ErrorHandler("Email Already Exists!", 400));
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const newUser = await User.create({ name, email, password: hashedPassword });
-
-    res.status(201).json({
-      success: true,
-      message: "User Registered Successfully!",
-      user: { id: newUser._id, name: newUser.name, email: newUser.email },
+    await sendEmail({
+      email: newUser.email,
+      subject: "Email Verification OTP",
+      html: `
+        <div style="font-family: Arial, sans-serif; text-align: center;">
+          <h1>Email Verification</h1>
+          <p>Your OTP code is:</p>
+          <h2>${otp}</h2>
+          <p>This code will expire in 10 minutes.</p>
+        </div>
+      `,
     });
+
+    createSendToken(newUser, 200, res, "Registration successful. OTP sent to your email.");
   } catch (error) {
-    return next(error);
+    await User.findByIdAndDelete(newUser._id);
+    return next(new ErrorHandler("Error sending email. Please try again.", 500));
   }
 };
 
-
-// Логин пользователя
+// Вход
 export const loginUser = async (req, res, next) => {
   const { email, password } = req.body;
 
   if (!email || !password) {
-    return next(new ErrorHandler("Please Enter Email and Password!", 400));
+    return next(new ErrorHandler("Please provide email and password!", 400));
   }
 
-  try {
-    const user = await User.findOne({ email }).select("+password");
-    if (!user) {
-      return next(new ErrorHandler("Invalid Email or Password!", 401));
-    }
-
-    const isPasswordMatch = await bcrypt.compare(password, user.password);
-    if (!isPasswordMatch) {
-      return next(new ErrorHandler("Invalid Email or Password!", 401));
-    }
-
-    // Создание токена JWT
-    const token = jwt.sign(
-      { userId: user._id, email: user.email }, // payload
-      process.env.JWT_SECRET, // секретный ключ из .env
-      { expiresIn: "1h" } // время жизни токена (например, 1 час)
-    );
-
-    res.status(200).json({
-      success: true,
-      message: "Logged In Successfully!",
-      user: { id: user._id, name: user.name, email: user.email },
-      token, // Возвращаем токен
-    });
-  } catch (error) {
-    return next(error);
+  const user = await User.findOne({ email }).select("+password");
+  if (!user) {
+    return next(new ErrorHandler("Invalid email or password!", 401));
   }
+
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) {
+    return next(new ErrorHandler("Invalid email or password!", 401));
+  }
+
+  createSendToken(user, 200, res, "Login successful.");
 };
 
-
-// Обновление данных пользователя
+// Обновление пользователя
 export const updateUser = async (req, res, next) => {
-  const { name, email, password } = req.body;
-  const userId = req.userId; // Извлекаем userId из токена, добавленного в middleware
+  const { name, password } = req.body;
 
-  if (!userId) {
-    return next(new ErrorHandler("User ID is required!", 400));
+  if (!name && !password) {
+    return next(new ErrorHandler("No data provided for update!", 400));
   }
 
-  try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return next(new ErrorHandler("User not found!", 404));
-    }
+  const updates = {};
+  if (name) updates.name = name;
+  if (password) updates.password = await bcrypt.hash(password, 10);
 
-    if (name) user.name = name;
-    if (email) user.email = email;
-    if (password) user.password = await bcrypt.hash(password, 10);
+  const updatedUser = await User.findByIdAndUpdate(req.userId, updates, {
+    new: true,
+    runValidators: true,
+  });
 
-    await user.save();
-
-    res.status(200).json({
-      success: true,
-      message: "User updated successfully!",
-      user: { id: user._id, name: user.name, email: user.email },
-    });
-  } catch (error) {
-    return next(error);
+  if (!updatedUser) {
+    return next(new ErrorHandler("User not found!", 404));
   }
+
+  updatedUser.password = undefined;
+
+  res.status(200).json({
+    success: true,
+    message: "User updated successfully.",
+    data: { user: updatedUser },
+  });
 };
 
 // Удаление пользователя
 export const deleteUser = async (req, res, next) => {
-  const userId = req.userId; // Извлекаем userId из токена
+  const user = await User.findByIdAndDelete(req.userId);
 
-  if (!userId) {
-    return next(new ErrorHandler("User ID is required!", 400));
+  if (!user) {
+    return next(new ErrorHandler("User not found!", 404));
   }
 
-  try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return next(new ErrorHandler("User not found!", 404));
-    }
+  res.status(200).json({
+    success: true,
+    message: "User deleted successfully.",
+  });
+};
 
-    await user.deleteOne();
+// Верификация OTP
+export const verifyOtp = async (req, res, next) => {
+  const { email, otp } = req.body;
+
+  if (!email || !otp) {
+    return next(new ErrorHandler("Email and OTP are required!", 400));
+  }
+
+  const user = await User.findOne({ email });
+  if (!user) {
+    return next(new ErrorHandler("User not found!", 404));
+  }
+
+  if (user.otp !== otp || user.otpExpires < Date.now()) {
+    return next(new ErrorHandler("Invalid or expired OTP!", 400));
+  }
+
+  user.otp = undefined;
+  user.otpExpires = undefined;
+  await user.save();
+
+  res.status(200).json({
+    success: true,
+    message: "OTP verified successfully!",
+  });
+};
+
+// Повторная отправка OTP
+export const resendOtp = async (req, res, next) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return next(new ErrorHandler("Email is required to resend OTP", 400));
+  }
+
+  const user = await User.findOne({ email });
+
+  if (!user) {
+    return next(new ErrorHandler("User not found", 404));
+  }
+
+  const newOtp = generateOtp();
+  user.otp = newOtp;
+  user.otpExpires = Date.now() + 10 * 60 * 1000;
+
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendEmail({
+      email: user.email,
+      subject: "Resend OTP for Email Verification",
+      html: `
+        <div style="font-family: Arial, sans-serif; text-align: center;">
+          <h1>Resend OTP</h1>
+          <p>Your new OTP code is:</p>
+          <h2>${newOtp}</h2>
+          <p>This code will expire in 10 minutes.</p>
+        </div>
+      `,
+    });
 
     res.status(200).json({
       success: true,
-      message: "User deleted successfully!",
+      message: "A new OTP has been sent to your email.",
     });
   } catch (error) {
-    return next(error);
+    user.otp = undefined;
+    user.otpExpires = undefined;
+    await user.save({ validateBeforeSave: false });
+
+    return next(new ErrorHandler("Failed to send OTP. Please try again.", 500));
   }
 };
