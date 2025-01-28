@@ -41,47 +41,49 @@ export const registerUser = async (req, res, next) => {
   const { name, email, password } = req.body;
 
   if (!name || !email || !password) {
-    return next(new ErrorHandler("Please fill all fields!", 400));
+      return next(new ErrorHandler("Please fill all fields!", 400));
   }
 
   const existingUser = await User.findOne({ email });
   if (existingUser) {
-    return next(new ErrorHandler("Email already exists!", 400));
+      return next(new ErrorHandler("Email already exists!", 400));
   }
 
   const otp = generateOtp();
-  const otpExpires = Date.now() + 10 * 60 * 1000; 
+  const otpExpires = Date.now() + 10 * 60 * 1000;
 
   const hashedPassword = await bcrypt.hash(password, 10);
 
   const newUser = await User.create({
-    name,
-    email,
-    password: hashedPassword,
-    otp,
-    otpExpires,
+      name,
+      email,
+      password: hashedPassword,
+      otp,
+      otpExpires,
   });
 
   try {
-    await sendEmail({
-      email: newUser.email,
-      subject: "Email Verification OTP",
-      html: `
-        <div style="font-family: Arial, sans-serif; text-align: center;">
-          <h1>Email Verification</h1>
-          <p>Your OTP code is:</p>
-          <h2>${otp}</h2>
-          <p>This code will expire in 10 minutes.</p>
-        </div>
-      `,
-    });
+      await sendEmail({
+          email: newUser.email,
+          subject: "Email Verification OTP",
+          html: `
+              <div style="font-family: Arial, sans-serif; text-align: center;">
+                  <h1>Email Verification</h1>
+                  <p>Your OTP code is:</p>
+                  <h2>${otp}</h2>
+                  <p>This code will expire in 10 minutes.</p>
+              </div>
+          `,
+      });
 
-    createSendToken(newUser, 200, res, "Registration successful. OTP sent to your email.");
+      
+      res.redirect(`/verify-otp?email=${email}`);
   } catch (error) {
-    await User.findByIdAndDelete(newUser._id);
-    return next(new ErrorHandler("Error sending email. Please try again.", 500));
+      await User.findByIdAndDelete(newUser._id);
+      return next(new ErrorHandler("Error sending email. Please try again.", 500));
   }
 };
+
 
 // Вход
 export const loginUser = async (req, res, next) => {
@@ -150,30 +152,28 @@ export const deleteUser = async (req, res, next) => {
 
 // Верификация OTP
 export const verifyOtp = async (req, res, next) => {
-  const { email, otp } = req.body;
+  const { email, otp } = req.query;
 
   if (!email || !otp) {
-    return next(new ErrorHandler("Email and OTP are required!", 400));
+      return next(new ErrorHandler("Email and OTP are required!", 400));
   }
 
   const user = await User.findOne({ email });
   if (!user) {
-    return next(new ErrorHandler("User not found!", 404));
+      return next(new ErrorHandler("User not found!", 404));
   }
 
   if (user.otp !== otp || user.otpExpires < Date.now()) {
-    return next(new ErrorHandler("Invalid or expired OTP!", 400));
+      return next(new ErrorHandler("Invalid or expired OTP!", 400));
   }
 
   user.otp = undefined;
   user.otpExpires = undefined;
   await user.save();
 
-  res.status(200).json({
-    success: true,
-    message: "OTP verified successfully!",
-  });
+  res.redirect("/profile");
 };
+
 
 // Повторная отправка OTP
 export const resendOtp = async (req, res, next) => {
