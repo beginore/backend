@@ -155,13 +155,15 @@ app.post("/resend-otp", async (req, res) => {
 
     req.session.otp = otp;
 
+    console.log(`New OTP for ${email}: ${otp}`);
+
     await sendEmail({
       email: user.email,
       subject: "Email Verification OTP",
       html: `
         <div style="font-family: Arial, sans-serif; text-align: center;">
           <h1>Email Verification</h1>
-          <p>Your OTP code is:</p>
+          <p>Your new OTP code is:</p>
           <h2>${otp}</h2>
           <p>This code will expire in 10 minutes.</p>
         </div>
@@ -175,6 +177,7 @@ app.post("/resend-otp", async (req, res) => {
     res.status(500).send("Internal server error: " + error.message);
   }
 });
+
 
 
 // Sign In
@@ -234,5 +237,16 @@ app.post("/delete", async (req, res) => {
     res.send("Failed to delete account.");
   }
 });
+
+// Log Out
+app.post("/logout", (req, res) => {
+  req.session.destroy((err) => {
+      if (err) {
+          return res.status(500).send("Error");
+      }
+      res.redirect("/");
+  });
+});
+
 
 export default app;
